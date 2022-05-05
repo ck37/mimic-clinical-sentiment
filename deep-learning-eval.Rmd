@@ -1,0 +1,47 @@
+---
+title: "dl eval"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+```
+
+Evaluate results from deep learning model.
+
+```{r}
+df = rio::import("data/predicted-sentiment.xlsx")
+head(df)
+# Use this rather than the pandas index column, which has some gaps.
+df$order = seq(nrow(df))
+
+sent_levels = c("Very Negative", "Negative", "Neutral", "Positive", "Very Positive")
+
+df$sent = factor(df$`overall-sentiment`, levels = sent_levels)
+df$pred_sent = factor(df$predicted, levels = sent_levels)
+
+table(df$sent)
+names(df)
+```
+
+```{r eval}
+# 91% with training and test combined.
+cor(as.integer(df$sent), as.integer(df$pred_sent))
+
+df_test = df %>% filter(split == 'test')
+
+# 83% with pearson.
+cor(as.integer(df_test$sent), as.integer(df_test$pred_sent))
+
+# 81% accuracy.
+mean(df_test$sent == df_test$pred_sent)
+
+# 84% with spearman.
+(res = cor.test(as.integer(df_test$sent), as.integer(df_test$pred_sent), method = "spearman", exact = FALSE))
+save(res,
+     df_test,
+     file = "data/label-analysis-deeplearning-cor.RData")
+```
+

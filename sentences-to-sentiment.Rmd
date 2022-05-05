@@ -1,0 +1,150 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Import dataset
+
+```{r sentences}
+library(arrow)
+
+# Created in 02_sentence-sentiment.ipynb
+# Rio is not able to open this feather file correctly, need to use arrow package.
+# Should be 29 MM rows.
+system.time({
+sent_df = arrow::read_feather("data/mimic-sentences-sentiment.feather")
+})
+dim(sent_df)
+names(sent_df)
+str(sent_df)
+
+any(sent_df$row_id == 399285L)
+```
+
+## SentimentR
+
+```{r sentimentr_sentences}
+# Took 2 hours.
+system.time({
+sentences = sentimentr::get_sentences(sent_df$text)
+})
+
+save(sentences,
+     file = here::here("data/sentimentr-sentences.RData"))
+```
+
+```{r sentimentr_sentiment}
+
+str(sentences)
+
+# Took 7 hours on Benten (1 core)
+system.time({
+results = sentimentr::sentiment_by(sentences)
+})
+head(results)
+sent_df$sentimentr_sent = results$ave_sentiment
+summary(sent_df$sentimentr_sent)
+```
+
+## Save result
+
+```{r save_result}
+save(sent_df,
+     file = "data/sentences-sentiment.RData")
+```
+
+
+## Load data
+
+```{r load_data}
+load("data/sentences-sentiment.RData")
+```
+
+
+## Top sentences
+
+```{r top_sentences}
+names(sent_df)
+# Select top 2 sentences and bottom 2 sentences for each measure.
+num = 2L
+
+# See ?rank
+ties = "random"
+
+# Takes 87 seconds.
+# This does not contain keyword sentiment because that measure isn't in this dataset yet.
+
+system.time({
+example_df = sent_df %>%
+  # A few sentences have 0 or 1 chars, so give a little margin.
+  filter(chars > 5) %>%
+  mutate(rank_stanza = rank(sent_stanza, ties.method = ties),
+         rank_deberta = rank(sent_deberta, ties.method = ties),
+         rank_pattern = rank(sent_pattern, ties.method = ties),
+         rank_sentimentr = rank(sentimentr_sent, ties.method = ties)) %>%
+  filter(rank_stanza <= num | rank_stanza > n() - num |
+         rank_deberta <= num | rank_deberta > n() - num |
+         rank_pattern <= num | rank_pattern > n() - num |
+         rank_sentimentr <= num | rank_sentimentr > n() - num) %>%
+  select(-c(chars, words, keyword_count))
+})
+
+# Only 3, so not too terrible.
+# TODO: need to remove these during sentence segmentation so that they don't
+# influence averages.
+(empty_sentences = sent_df %>% filter(chars == 0))
+
+example_df
+
+# Export df for manual review.
+rio::export(example_df,
+            file = "tables/sentiment-sentence-examples.xlsx")
+
+set.seed(1)
+deberta_examples = sent_df %>%
+  filter(chars >= 5,
+         text != "_LINE_") %>%
+  group_by(sent_deberta) %>%
+  sample_n(10) %>% ungroup()
+
+deberta_examples
+
+rio::export(deberta_examples,
+            file = "tables/deberta-sentence-examples.xlsx")
+
+```
+
+## Aggregate to note level
+
+```{r aggregate}
+library(dplyr)
+dim(sent_df)
+names(sent_df)
+sent_df2 = sent_df %>%
+  group_by(row_id) %>%
+  summarize(
+    sentences = n(),
+    chars = sum(chars),
+    words = sum(words),
+    sent_stanza = mean(sent_stanza),
+    sent_pattern = mean(sent_pattern),
+    sent_deberta = mean(sent_deberta),
+    # Whoops, named the sentence-level variable backwards.
+    sent_sentimentr = mean(sentimentr_sent))
+dim(sent_df2)
+head(sent_df2)
+
+sent_df2 %>% select(sent_stanza, sent_pattern, sent_deberta, sent_sentimentr) %>%
+  cor(use = "pairwise.complete.obs")
+
+save(sent_df2,
+     file = "data/notes-sentiment.RData")
+
+rio::export(sent_df2,
+            file = "data/notes-sentiment.feather")
+
+```

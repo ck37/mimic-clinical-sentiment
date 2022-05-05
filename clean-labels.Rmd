@@ -1,0 +1,303 @@
+---
+title: "Labels clean"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(ggplot2)
+```
+
+## Import
+
+```{r import}
+df = rio::import("data-raw/sentence-labels.csv")
+names(df) = gsub("[-]+", "_", names(df), perl = TRUE)
+dim(df)
+str(df)
+```
+
+## Clean
+
+### Outcome
+
+```{r outcome}
+df$overall_sentiment = tolower(df$overall_sentiment)
+table(df$overall_sentiment, useNA = "ifany")
+df$overall_sentiment =
+  factor(df$overall_sentiment,
+         levels = c("very negative", "negative", "neutral", "positive", "very positive"))
+table(df$overall_sentiment, useNA = "ifany")
+
+# Drop rows missing sentiment
+df = df[!is.na(df$overall_sentiment), ]
+
+table(df$overall_sentiment, as.integer(df$overall_sentiment), useNA = "ifany")
+```
+
+### Raw text
+
+```{r raw_text}
+# How many words are in each fragment?
+df$num_tokens = quanteda::ntoken(df$text)
+summary(df$num_tokens)
+```
+
+## Keyword list
+
+### Clean keywords
+
+```{r clean_keywords}
+
+# Old version - excel spreadsheet is incomplete though.
+'
+kw = rio::import("data-raw/Keywords for lexicon-based sentiment classifier.xlsx",
+                 sheet ="Word Delineations")
+names(kw) = c("root_neg", "negative", "root_pos", "positive", "notes")
+
+# Remove roots
+kw$root_neg = NULL
+kw$root_pos = NULL
+kw$notes = NULL
+
+head(kw)
+'
+
+#kw_neg = rio::import("data-raw/negative_keywords.csv",
+kw_neg = data.table::fread("data-raw/negative_keywords.csv",
+                     header = FALSE,
+                     sep = ",",
+                     quote = "",
+                     data.table = FALSE,
+                     col.names = "keyword")
+dim(kw_neg)
+kw_neg$valence = "negative"
+head(kw_neg)
+kw_pos = data.table::fread("data-raw/positive_keywords.csv",
+                     header = FALSE,
+                     sep = ",",
+                     quote = "",
+                     data.table = FALSE,
+                     col.names = "keyword")
+kw_pos$valence = "positive"
+dim(kw_pos)
+head(kw_pos)
+kw = rbind.data.frame(kw_neg, kw_pos)
+
+# Transform from wide to long format.
+library(dplyr)
+'
+kw = kw %>% tidyr::pivot_longer(c("negative", "positive"),
+                                names_to = "valence",
+                                values_to = "keyword") %>%
+  filter(!is.na(keyword)) %>%
+  relocate(keyword)
+ '
+dim(kw)
+kw$keyword = tolower(kw$keyword)
+table(kw$valence)
+head(kw)
+
+save(kw, file = "data/keywords.RData")
+```
+
+### Count keywords
+
+```{r count_kw}
+pos_keywords = kw %>% filter(valence == "positive") %>% pull(keyword)
+#invisible(lapply(pos_keywords, FUN = function(keyword) cat(keyword, "\n")))
+
+positive_keywords = lapply(kw %>% filter(valence == "positive") %>% pull(keyword),
+                           FUN = function(keyword) {
+                             # sapply() will use the entire string as the name of the result so
+                             # it is important to unname()
+                             unname(sapply(df$text, FUN = stringr::str_count, keyword))
+                           })
+kw_pos = as.data.frame(positive_keywords)
+names(kw_pos) = paste0("p_", gsub(" ", "_", kw %>% filter(valence == "positive") %>% pull(keyword)))
+
+neg_keywords = kw %>% filter(valence == "negative") %>% pull(keyword)
+negative_keywords = lapply(kw %>% filter(valence == "negative") %>% pull(keyword),
+                           FUN = function(keyword) {
+                             # sapply() will use the entire string as the name of the result so
+                             # it is important to unname()
+                             unname(sapply(df$text, FUN = stringr::str_count, keyword))
+                           })
+kw_neg = as.data.frame(negative_keywords)
+names(kw_neg) = paste0("n_", gsub(" ", "_", kw %>% filter(valence == "negative") %>% pull(keyword)))
+
+# Count the number of positive keywords
+df$pos_keywords = rowSums(kw_pos)
+
+# Count the number of negative keywords
+df$neg_keywords = rowSums(kw_neg)
+
+# TODO: if a positive keyword is a subset of a negative keyword, or vice versa,
+# and both are found at a given location, don't count the smaller keyword.
+
+summary(df$pos_keywords)
+summary(df$neg_keywords)
+
+```
+
+## Python sentiment
+
+Sentiment from the Stanza and pattern modules, plus keyword tagging for our own measures using the python functions.
+
+```{r stanza}
+# Created in stanza-labels.ipynb
+df_python = rio::import("data/labels-python-predicted-sentiment.xlsx")
+#head(df_stanza)
+
+df$stanza_sent = df_python$stanza_sent
+df$pattern_sent = df_python$pattern_sent
+summary(df$stanza_sent)
+table(df$stanza_sent)
+ggplot2::qplot(df$stanza_sent)
+summary(df$pattern_sent)
+
+df_python$NUM_NEG_KEYWORDS
+
+nrow(df)
+nrow(df_python)
+df = df %>%
+  rename(num_pos = "pos_keywords",
+         num_neg = "neg_keywords")
+
+# Switch to the python keyword counts, since they
+# do improved nesting.
+df$old_pos_keywords = df_python$NUM_POS_KEYWORDS
+df$pos_keywords = df_python$keyword_count_pos
+df$old_neg_keywords = df_python$NUM_NEG_KEYWORDS
+df$neg_keywords = df_python$keyword_count_neg
+summary(df$pos_keywords)
+
+# 0.942
+cor(df$old_pos_keywords, df$pos_keywords)
+# 0.963
+cor(df$old_neg_keywords, df$neg_keywords)
+
+# Difference is not large.
+summary(df$old_pos_keywords - df$pos_keywords)
+summary(df$old_neg_keywords - df$neg_keywords)
+```
+
+## TF-IDF
+
+```{r tfidf}
+
+df_python %>%
+  select(advocate:`would want`) %>%
+  summarize(across(.fns = max))
+
+# Use the python df and create tf-idf scores for each keyword column.
+# Multiply the negative keywords by -1.
+# Then sum to create the tf-idf score.
+names(df_python)
+df_python2 = df_python %>%
+  mutate(across(advocate:`would want`,
+                # Calculate TF-IDF
+                # This is "smoothed" IDF on
+                # https://en.wikipedia.org/wiki/Tf%E2%80%93idf#Inverse_document_frequency_2
+                # We add 1 to both N and to df(t), per smooth_idf = True in sklearn TFidf.
+                ~ .x * (1 + log((1+ n()) / (1 + sum(.x > 0))))
+                )) %>%
+         # This should be the l2 norm
+  rowwise() %>%
+  mutate(l2_norm = norm(as.matrix(across(advocate:`would want`)), type = "f")) %>%
+  ungroup() %>%
+  # Convert any 0s back to 1 so that they can be divisors.
+  mutate(l2_norm = ifelse(l2_norm == 0, 1, l2_norm)) 
+        
+summary(df_python2$l2_norm)
+
+# Check l2_norm by calculating manually and confirming that we get the same thing.
+x = df_python2 %>% select(advocate:`would want`) %>% head(5)
+
+# Looks good.
+cbind(df_python2[1:5, "l2_norm"], 
+      l2_norms = apply(x, MARGIN = 1, function(x) { sqrt(sum(x^2)) }))
+
+kw_cols = df_python %>% select(advocate:`would want`) %>% colnames()
+for (kw_i in kw_cols) {
+  if (kw_i %in% neg_keywords) {
+    df_python2[[kw_i]] = df_python2[[kw_i]] * -1
+  }
+}
+  
+
+summary(df_python2$advocate)
+summary(df_python2$`does not want`)
+summary(df_python$advocate)
+
+df_python2$tfidf = rowSums(df_python2[, kw_cols])
+df_python2$tfidf_l2 = rowSums(df_python2[, kw_cols]) / df_python2$l2_norm
+summary(df_python2$tfidf)
+
+
+df$tfidf = df_python2$tfidf
+df$tfidf_l2 = df_python2$tfidf_l2
+df$tfidf_len = df_python2$tfidf_l2 / df$num_tokens
+
+qplot(df$tfidf) + theme_minimal()
+qplot(df$tfidf_l2) + theme_minimal()
+qplot(df$tfidf_len) + theme_minimal()
+```
+
+## Sentiment measurement
+
+```{r sent_measure}
+# Count difference
+df$sent_count_diff = df$pos_keywords - df$neg_keywords
+summary(df$sent_count_diff)
+qplot(df$sent_count_diff) + theme_minimal()
+
+# Percentage difference: normalize by the number of tokens in the fragment.
+df$sent_pct_diff = df$sent_count_diff / df$num_tokens
+# Ranges from -1 to +1 as expected.
+summary(df$sent_pct_diff)
+qplot(df$sent_pct_diff) + theme_minimal()
+
+# Try taking a sqrt to spread out the values a bit more.
+df$sent_pct_diff_sqrt = sqrt(abs(df$sent_pct_diff)) * ifelse(df$sent_count_diff >= 0, 1, -1)
+summary(df$sent_pct_diff_sqrt)
+qplot(df$sent_pct_diff_sqrt) + theme_minimal()
+
+# Proportion of negative sentiment
+# % of sentiment keywords that are neg
+df$sent_pct_neg = df$neg_keywords / (df$neg_keywords + df$pos_keywords) 
+# Note that excerpts with 0 keywords get NA due to this formula.
+summary(df$sent_pct_neg)
+qplot(df$sent_pct_neg) + theme_minimal()
+
+# Proportion of positive sentiment
+df$sent_pct_pos = df$pos_keywords / (df$neg_keywords + df$pos_keywords) 
+summary(df$sent_pct_pos)
+qplot(df$sent_pct_pos) + theme_minimal()
+```
+
+
+## Sentimentr sentiment
+
+```{r sentimentr}
+# Convert 
+sentences = sentimentr::get_sentences(df$text)
+str(sentences)
+results = sentimentr::sentiment_by(sentences)
+head(results)
+df$sentimentr_sent = results$ave_sentiment
+summary(df$sentimentr_sent)
+```
+
+## Save dataset
+
+```{r save_dataset}
+save(df,
+     file = "data/clean-labels.RData")
+```

@@ -1,0 +1,339 @@
+---
+title: "Analyze labels"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+```{r setup,include=FALSE}
+library(dplyr)
+library(ggplot2)
+```
+
+## Load data
+
+```{r load_data}
+# Created by clean-labels.Rmd
+load("data/clean-labels.RData")
+
+names(df)
+
+table(df$overall_sentiment, useNA = "ifany")
+```
+
+## Impute missing data
+
+```{r impute_missing}
+# Compare to imputed version.
+df2 = df
+# Impute missing with 50%
+df2$sent_pct_neg[is.na(df2$sent_pct_neg)] = 0.5
+df2$sent_pct_pos[is.na(df2$sent_pct_pos)] = 0.5
+```
+
+## Rank correlation
+
+```{r rank_corr}
+method = "spearman"
+
+result_df = NULL
+
+# 0.58
+(res = cor.test(df2$sent_count_diff, as.integer(df2$overall_sentiment), method = method, exact = FALSE))
+result_df = data.frame(predictor = "sent_count_diff", correlation = res$estimate, p_value = res$p.value, stringsAsFactors = FALSE)
+# 0.61
+(res = cor.test(df2$sent_pct_diff, as.integer(df2$overall_sentiment), method = method, exact = FALSE))
+result_df = rbind(result_df, list("sent_pct_diff", res$estimate, res$p.value))
+
+# Same as above, no need to add to table.
+(res = cor.test(df2$sent_pct_diff_sqrt, as.integer(df2$overall_sentiment), method = method, exact = FALSE))
+#result_df = rbind(result_df, list("sent_pct_diff", res$estimate, res$p.value))
+
+# 0.61 - same as neg.
+(res = cor.test(df2$sent_pct_pos, as.integer(df2$overall_sentiment), method = method, exact = FALSE))
+result_df = rbind(result_df, list("sent_pct_pos", res$estimate, res$p.value))
+
+# 0.61
+(res = cor.test(-1 * df2$sent_pct_neg, as.integer(df2$overall_sentiment), method = method, exact = FALSE))
+result_df = rbind(result_df, list("sent_pct_neg", res$estimate, res$p.value))
+
+# Confirm that they are 100% correlated.
+cor.test(df2$sent_pct_pos, df2$sent_pct_neg)
+qplot(df2$sent_pct_pos, df2$sent_pct_neg) + theme_minimal()
+
+(res = cor.test(df2$tfidf, as.integer(df2$overall_sentiment), method = method, exact = FALSE))
+result_df = rbind(result_df, list("tfidf", res$estimate, res$p.value))
+
+(res = cor.test(df2$tfidf_l2, as.integer(df2$overall_sentiment), method = method, exact = FALSE))
+result_df = rbind(result_df, list("tfidf-l2", res$estimate, res$p.value))
+
+
+(res = cor.test(df2$tfidf_len, as.integer(df2$overall_sentiment), method = method, exact = FALSE))
+result_df = rbind(result_df, list("tfidf-len", res$estimate, res$p.value))
+
+
+#######
+# Benchmarks
+
+# Stanza: 0.28
+(res = cor.test(df2$stanza_sent, as.integer(df2$overall_sentiment), method = method, exact = FALSE))
+result_df = rbind(result_df, list("stanza", res$estimate, res$p.value))
+
+# Sentimentr: 0.48
+(res = cor.test(df2$sentimentr_sent, as.integer(df2$overall_sentiment), method = method, exact = FALSE))
+result_df = rbind(result_df, list("sentimentr", res$estimate, res$p.value))
+
+# Pattern: 
+(res = cor.test(df2$pattern_sent, as.integer(df2$overall_sentiment), method = method, exact = FALSE))
+result_df = rbind(result_df, list("pattern", res$estimate, res$p.value))
+```
+
+### Add deep learning analysis.
+
+```{r corr_dl}
+# Add result from deep-learning-eval.Rmd
+# objects: res, df_test
+load("data/label-analysis-deeplearning-cor.RData")
+result_df = rbind(result_df, list("debertav3", res$estimate, res$p.value))
+
+# Create a row order column to allow merging with python test set.
+df2$order = seq(nrow(df2))
+head(df2$order)
+
+# Subset to the two variables that we need
+df_test = df_test[, c("order", "pred_sent")]
+head(df_test)
+names(df_test)[2] = "debertav3"
+
+# Integrate the deberta prediction.
+# We use df2 as it has imputed values for the other algorithms.
+df2 = dplyr::left_join(df2, df_test, by = "order")
+names(df2)
+
+# We expect to have 1194 NAs from the test set.
+table(df2$debertav3, useNA = "ifany")
+
+# And 299 should be non-NA, which is the test set size.
+table(is.na(df2$debertav3))
+
+```
+
+### Table and plot
+
+```{r table_and_plot}
+rownames(result_df) = NULL
+result_df
+
+result_df$predictor = c("Positive - negative",
+                        "(Positive - negative) / length",
+                        "Positive / (positive + negative)",
+                        "Negative / (positive + negative)",
+                        "Sum(TF-IDF)",
+                        "Sum(TF-IDF / L2)",
+                        "Sum(TF-IDF) / length",
+                        "Stanza",
+                        "Sentimentr",
+                        "Pattern",
+                        "DeBERTa-v3")
+
+result_df
+library(gt)
+
+# Subset to a smaller number of measures.
+(result_df2 = result_df[c(4, 8:11), ])
+
+#(tab = gt(result_df) %>%
+(tab = gt(result_df2) %>%
+    cols_label(predictor = "Predictor",
+               correlation = "Rank correlation",
+               p_value = "P-value") %>%
+    fmt_number("correlation", decimals = 3) %>%
+    fmt_scientific("p_value", decimals = 2) %>%
+    tab_style(style = cell_text(weight = "bold"),
+              locations = cells_column_labels()))
+
+gtsave(tab, "tables/labels-performance.html")
+
+plot_df = result_df2 %>% arrange(correlation)
+
+plot_df
+
+plot_df$predictor = factor(plot_df$predictor, levels = plot_df$predictor)
+
+plot_df$label = scales::number(plot_df$correlation, accuracy = 0.001)
+
+plot_df
+levels(plot_df$predictor)
+levels(plot_df$predictor)[4] = "Negative /\n(Negative + Positive)"
+
+library(paletteer) 
+library(lisa)
+
+# Plot version.
+# Remove P / (P + N), since it's 100% correlated with N / (P + N)
+(p_labels = ggplot(plot_df %>% filter(predictor != "Positive / (positive + negative)"),
+       aes(x = predictor, y = correlation, fill = predictor)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = label), color = "white", hjust = 1.3, fontface = "bold") +
+  theme_minimal(14) +
+  #paletteer::scale_fill_paletteer_d("basetheme::royal") +
+  #paletteer::scale_fill_paletteer_d("ggthemes::Classic_Cyclic")+#, direction = -1) +
+  #paletteer::scale_fill_paletteer_d("awtools::spalette")+
+  #paletteer::scale_fill_paletteer_d("fishualize::Etheostoma_spectabile")+
+  #paletteer::scale_fill_paletteer_d("fishualize::Scarus_hoefleri")+
+  paletteer::scale_fill_paletteer_d("lisa::RobertDelaunay", direction = -1) +
+  coord_flip() + 
+  geom_vline(xintercept = 3.5) +
+  theme(axis.title.y = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_blank()) +
+  labs(y = "Spearman rank correlation with labels"))
+ggsave("visuals/fig-rank-correlation.png", bg = "white",
+       dpi = 300, width = 5, height = 3.8)
+ggsave("visuals/fig-rank-correlation.pdf",
+       width = 5, height = 3.8)
+
+save(p_labels,
+     file = "data/plots-label-correlation.RData")
+
+save(result_df,
+     file = "data/label-validation.RData")
+```
+
+## Correlogram (old)
+
+Plot of the correlation of measures
+
+```{r correlogram}
+library(ggcorrplot)
+#measures = c("sent_count_diff", "sent_pct_diff", "sent_pct_pos", "sent_pct_neg", "tfidf", "tfidf_l2", "tfidf_len", "stanza_sent", "sentimentr_sent", "pattern_sent", "debertav3")
+measures = c("sent_pct_neg", "stanza_sent", "sentimentr_sent", "pattern_sent", "debertav3")
+
+# Convert from factor to integer for correlation analysis.
+df2$debertav3 = as.integer(df2$debertav3)
+# Make sure to use df2, which imputes missing values.
+M <- cor(df2[, measures], method = "spearman",
+         # Allow missing variables since deep learning model only analyzed test set.
+         use = "pairwise.complete.obs")
+str(M)
+cor_names =  c("P - N",
+               "(P - N) / L",
+               "P / (P + N)",
+               "N / (P + N)",
+               "Sum(TF-IDF)",
+               "Sum(TF-IDF / L2)",
+               "Sum(TF-IDF) / len",
+               "Stanza",
+               "Sentimentr",
+               "Pattern",
+               "DeBERTa-v3")
+cor_names =  c("N / (P + N)",
+               "Stanza",
+               "Sentimentr",
+               "Pattern",
+               "DeBERTa-v3")
+rownames(M) = colnames(M) = cor_names # result_df$predictor
+
+res1 <- corrplot::cor.mtest(df2[, measures], method = "spearman", conf.level = .95)
+p.mat <- res1$p
+p.mat
+
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+```
+
+This is the version we're actually using.
+
+## Correlogram (paper)
+
+```{r corr_pearson}
+library(ggcorrplot)
+(p_corr = ggcorrplot(M,
+           hc.order = TRUE,
+           p.mat = p.mat,
+           insig = "blank",
+           lab = TRUE,
+           lab_size = 2.7,
+           outline.color = "white",
+           tl.cex = 11,
+           type = "upper"))
+ggsave("visuals/correlogram-labels.png",
+       width = 5, height = 5)
+
+ggsave("visuals/correlogram-labels.pdf",
+       width = 5, height = 5)
+
+save(p_corr,
+     file = "data/plots-correlogram.RData")
+```
+
+## Combined figure (paper)
+
+```{r combined}
+(p_figure2 = cowplot::plot_grid(p_labels, p_corr, nrow = 1, ncol = 2, labels = c("a.", "b.")))
+ggsave("visuals/figure2-combined.pdf",
+       width = 10, height = 5)
+
+ggsave("visuals/figure2-combined.png",
+       width = 10, height = 5)
+
+save(p_figure2,
+     file = "data/plots-figure2-combined.RData")
+```
+
+## Misc (skip)
+
+### Stanza R^2
+
+```{r stanza_eval, eval = FALSE}
+reg = lm(as.integer(overall_sentiment) ~ stanza_sent, data = df)
+# 0.097
+summary(reg)
+```
+
+
+
+### R^2 eval
+
+```{r quick_eval, eval = FALSE}
+
+reg = lm(as.integer(overall_sentiment) ~ pos_keywords + neg_keywords, data = df)
+# Adjusted r-squared: 0.268
+summary(reg)
+
+# Slightly lower r-squared: 0.253
+reg = lm(as.integer(overall_sentiment) ~ sent_count_diff, data = df)
+# Slightly lower adjusted r-squared: 0.253
+summary(reg)
+
+reg = lm(as.integer(overall_sentiment) ~ sent_pct_diff, data = df)
+# Much lower: 0.161
+summary(reg)
+
+reg = lm(as.integer(overall_sentiment) ~ sent_pct_diff_sqrt, data = df)
+# Better: 0.30
+summary(reg)
+
+reg = lm(as.integer(overall_sentiment) ~ sent_pct_neg, data = df)
+# Even better: 0.433, although 445 obs dropped due to missingness.
+summary(reg)
+
+
+reg = lm(as.integer(overall_sentiment) ~ sent_pct_neg, data = df2)
+# 0.34, now only dropping 6 obs.
+summary(reg)
+
+#names(df)
+```
+
+### Ordinal elastic net
+
+```{r ordinal, eval = FALSE}
+library(ordinalNet)
+fit1 = ordinalNet(data.matrix(df2[, c("sent_pct_neg"), drop = FALSE]),
+                  df2$overall_sentiment, family="cumulative", link="logit")
+head(summary(fit1))
+head(coef(fit1, matrix = TRUE))
+```
+

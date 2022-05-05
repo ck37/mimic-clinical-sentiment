@@ -1,0 +1,110 @@
+---
+title: "Analysis pilot labels"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+```{r setup}
+library(feather)
+library(irr)
+library(irrCAC)
+library(boot)
+
+```
+
+## 5-value version
+
+```{r uncollapsed}
+# Created by labeling-pilot.ipynb
+df = rio::import("data/labeling-pilot.xlsx")
+
+head(df)
+str(df)
+table(df$mary)
+levels5 = c("Very Negative", "Negative", "Neutral", "Positive", "Very Positive")
+df$daniel = factor(df$daniel, levels = levels5)
+df$macgregor = factor(df$macgregor, levels = levels5)
+df$mary = factor(df$mary, levels = levels5)
+
+# Convert from factor to integer codes.
+df2 = data.frame(sapply(df[, c("daniel", "macgregor", "mary")], as.integer))
+head(df2)
+
+rating_mat = t(as.matrix(df2))
+rating_mat
+
+# Confirm the estimate from python.
+# 72.1%
+(result = kripp.alpha(rating_mat, method = "ordinal"))
+
+# This function appears to want ratings in columns rather than rows.
+result2 = irrCAC::krippen.alpha.raw(t(rating_mat), "ordinal")
+# 62.3% here - what's the deal?
+result2$est
+
+
+# Run bootstrap analysis to calculate CIs.
+# Takes ~23 seconds.
+system.time({
+bs <- boot(df2, function(data, index) {
+  df = data[index, ]
+  mat = t(as.matrix(df))
+  result = kripp.alpha(mat, method = "ordinal")
+  result$value
+}, R = 10000)
+})
+
+bs
+# CI is 0.64 - 0.77
+boot.ci(bs, type = c("norm", "perc", "bca"))
+```
+
+## Collapsed version (3 values)
+
+```{r collapsed}
+# Created by labeling-pilot.ipynb
+#df = rio::import("data/labeling-pilot.feather")
+df = rio::import("data/labeling-pilot-collapsed.xlsx")
+
+head(df)
+str(df)
+levels3 = c("Negative", "Neutral", "Positive")
+df$daniel = factor(df$daniel, levels = levels3)
+df$macgregor = factor(df$macgregor, levels = levels3)
+df$mary = factor(df$mary, levels = levels3)
+
+# Convert from factor to integer codes.
+df2 = data.frame(sapply(df, as.integer))
+head(df2)
+
+rating_mat = t(as.matrix(df2))
+rating_mat
+
+# Confirm the estimate from python.
+# 75.4% - confirmed.
+(result = kripp.alpha(rating_mat, method = "ordinal"))
+
+
+# This function appears to want ratings in columns rather than rows.
+result2 = irrCAC::krippen.alpha.raw(t(rating_mat), "ordinal")
+# 71.7% here - what's the deal?
+result2$est
+
+# Run bootstrap analysis to calculate CIs.
+# Takes ~20 seconds.
+system.time({
+bs <- boot(df2, function(data, index) {
+  df = data[index, ]
+  mat = t(as.matrix(df))
+  result = kripp.alpha(mat, method = "ordinal")
+  result$value
+}, R = 10000)
+})
+
+bs
+# CI is 0.66 - 0.82
+boot.ci(bs, type = c("norm", "perc", "bca"))
+```
