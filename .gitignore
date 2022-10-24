@@ -13,7 +13,6 @@
 data-raw/mimic
 data/*.csv
 visuals/*.csv
-models/*
 
 *.feather
 *.xz
