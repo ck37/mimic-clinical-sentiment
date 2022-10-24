@@ -3,7 +3,6 @@
 .RData
 .Ruserdata
 
-*.csv
 *.png
 *.html
 *.RData
@@ -12,6 +11,8 @@
 *.tsv
 *.pdf
 data-raw/mimic
+data/*.csv
+visuals/*.csv
 models/*
 
 *.feather
